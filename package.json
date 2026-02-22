@@ -1,0 +1,100 @@
+{
+  "name": "script-runner-local",
+  "displayName": "Script Runner",
+  "description": "Run scripts from a sidebar panel — npm, shell, Python, Go, and more",
+  "version": "0.3.0",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Other"],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "script-runner",
+          "title": "Script Runner",
+          "icon": "images/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "script-runner": [
+        {
+          "id": "scriptRunnerView",
+          "name": "Scripts"
+        }
+      ]
+    },
+    "commands": [
+      { "command": "scriptRunner.refresh",      "title": "Refresh",               "icon": "$(refresh)" },
+      { "command": "scriptRunner.add",           "title": "Add...",                "icon": "$(add)" },
+      { "command": "scriptRunner.run",           "title": "Run Script",            "icon": "$(play)" },
+      { "command": "scriptRunner.setOverride",   "title": "Set Command Override..." },
+      { "command": "scriptRunner.clearOverride", "title": "Clear Override" },
+      { "command": "scriptRunner.setLabel",      "title": "Set Display Name..." },
+      { "command": "scriptRunner.clearLabel",    "title": "Clear Display Name" },
+      { "command": "scriptRunner.removeSource",  "title": "Remove" },
+      { "command": "scriptRunner.manageSources", "title": "Remove Sources..." }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "scriptRunner.refresh",
+          "when": "view == scriptRunnerView",
+          "group": "navigation@2"
+        },
+        {
+          "command": "scriptRunner.add",
+          "when": "view == scriptRunnerView",
+          "group": "navigation@1"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "scriptRunner.run",
+          "when": "view == scriptRunnerView && viewItem =~ /^runnable/",
+          "group": "inline"
+        },
+        {
+          "command": "scriptRunner.run",
+          "when": "view == scriptRunnerView && viewItem =~ /^runnable/",
+          "group": "1_run@1"
+        },
+        {
+          "command": "scriptRunner.setOverride",
+          "when": "view == scriptRunnerView && viewItem =~ /^runnable/",
+          "group": "2_override@1"
+        },
+        {
+          "command": "scriptRunner.clearOverride",
+          "when": "view == scriptRunnerView && viewItem == runnable-overridden",
+          "group": "2_override@2"
+        },
+        {
+          "command": "scriptRunner.setLabel",
+          "when": "view == scriptRunnerView && viewItem =~ /^runnable/",
+          "group": "3_label@1"
+        },
+        {
+          "command": "scriptRunner.clearLabel",
+          "when": "view == scriptRunnerView && viewItem =~ /^runnable/",
+          "group": "3_label@2"
+        },
+        {
+          "command": "scriptRunner.removeSource",
+          "when": "view == scriptRunnerView && (viewItem == packageGroup || viewItem == makeGroup || viewItem == fileCategory)",
+          "group": "9_remove"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0"
+  }
+}

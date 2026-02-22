@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
+  <rect width="16" height="16" rx="2" fill="#00ACD7"/>
+  <!-- Gopher-inspired simplified: two circles for eyes, arc for body -->
+  <circle cx="5.5" cy="7" r="2.5" fill="white"/>
+  <circle cx="10.5" cy="7" r="2.5" fill="white"/>
+  <circle cx="5.5" cy="7" r="1.2" fill="#00ACD7"/>
+  <circle cx="10.5" cy="7" r="1.2" fill="#00ACD7"/>
+  <circle cx="5.9" cy="6.6" r="0.5" fill="white"/>
+  <circle cx="10.9" cy="6.6" r="0.5" fill="white"/>
+  <path d="M4 10 Q8 13 12 10" stroke="white" stroke-width="1.3" fill="none" stroke-linecap="round"/>
+</svg>
