@@ -1,0 +1,10 @@
+# Dev files — excluded from the packaged .vsix
+.gitignore
+.eslintrc*
+tsconfig.json
+src/
+node_modules/
+out/**/*.map
+install.sh
+**/*.ts
+!src/**

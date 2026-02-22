@@ -1,24 +1,58 @@
 {
-  "name": "script-runner-local",
-  "displayName": "Script Runner",
-  "description": "Run scripts from a sidebar panel — npm, shell, Python, Go, and more",
-  "version": "0.3.0",
-  "engines": { "vscode": "^1.85.0" },
-  "categories": ["Other"],
+  "name": "runway-script-runner",
+  "displayName": "Runway",
+  "description": "Run npm, shell, Python, Swift, Go and more from a smart sidebar. Add any package.json or script directory and launch with one click.",
+  "version": "1.0.0",
+  "publisher": "YOUR_PUBLISHER_ID",
+  "icon": "images/icon.png",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/YOUR_USERNAME/vscode-script-runner"
+  },
+  "bugs": {
+    "url": "https://github.com/YOUR_USERNAME/vscode-script-runner/issues"
+  },
+  "homepage": "https://github.com/YOUR_USERNAME/vscode-script-runner#readme",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "scripts",
+    "npm",
+    "runner",
+    "task runner",
+    "shell",
+    "python",
+    "swift",
+    "sidebar",
+    "terminal",
+    "pnpm",
+    "bun",
+    "yarn",
+    "makefile"
+  ],
+  "galleryBanner": {
+    "color": "#1A1C22",
+    "theme": "dark"
+  },
   "activationEvents": [],
   "main": "./out/extension.js",
   "contributes": {
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "script-runner",
-          "title": "Script Runner",
+          "id": "runway",
+          "title": "Runway",
           "icon": "images/icon.svg"
         }
       ]
     },
     "views": {
-      "script-runner": [
+      "runway": [
         {
           "id": "scriptRunnerView",
           "name": "Scripts"
@@ -26,15 +60,45 @@
       ]
     },
     "commands": [
-      { "command": "scriptRunner.refresh",      "title": "Refresh",               "icon": "$(refresh)" },
-      { "command": "scriptRunner.add",           "title": "Add...",                "icon": "$(add)" },
-      { "command": "scriptRunner.run",           "title": "Run Script",            "icon": "$(play)" },
-      { "command": "scriptRunner.setOverride",   "title": "Set Command Override..." },
-      { "command": "scriptRunner.clearOverride", "title": "Clear Override" },
-      { "command": "scriptRunner.setLabel",      "title": "Set Display Name..." },
-      { "command": "scriptRunner.clearLabel",    "title": "Clear Display Name" },
-      { "command": "scriptRunner.removeSource",  "title": "Remove" },
-      { "command": "scriptRunner.manageSources", "title": "Remove Sources..." }
+      {
+        "command": "scriptRunner.refresh",
+        "title": "Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "scriptRunner.add",
+        "title": "Add...",
+        "icon": "$(add)"
+      },
+      {
+        "command": "scriptRunner.run",
+        "title": "Run Script",
+        "icon": "$(play)"
+      },
+      {
+        "command": "scriptRunner.setOverride",
+        "title": "Set Command Override..."
+      },
+      {
+        "command": "scriptRunner.clearOverride",
+        "title": "Clear Override"
+      },
+      {
+        "command": "scriptRunner.setLabel",
+        "title": "Set Display Name..."
+      },
+      {
+        "command": "scriptRunner.clearLabel",
+        "title": "Clear Display Name"
+      },
+      {
+        "command": "scriptRunner.removeSource",
+        "title": "Remove"
+      },
+      {
+        "command": "scriptRunner.manageSources",
+        "title": "Remove Sources..."
+      }
     ],
     "menus": {
       "view/title": [
@@ -90,11 +154,13 @@
   },
   "scripts": {
     "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./"
+    "watch": "tsc -watch -p ./",
+    "package": "npm run compile && npx @vscode/vsce package"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.7.1",
     "typescript": "^5.3.0"
   }
 }
