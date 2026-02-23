@@ -3,8 +3,10 @@
 .eslintrc*
 tsconfig.json
 src/
+scripts/
 node_modules/
 out/**/*.map
 install.sh
+publish.sh
+token
 **/*.ts
-!src/**

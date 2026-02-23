@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-EXT_ID="script-runner-local"
+EXT_ID="runway-local"
 
 echo "→ Installing dependencies..."
 cd "$SCRIPT_DIR"
@@ -33,5 +33,5 @@ install_to "$HOME/.cursor/extensions"
 install_to "$HOME/.cursor-personal/extensions"
 
 echo ""
-echo "Done!  Reload any open VS Code / Cursor windows to activate Script Runner."
+echo "Done!  Reload any open VS Code / Cursor windows to activate Runway."
 echo "  Cmd+Shift+P → 'Developer: Reload Window'"

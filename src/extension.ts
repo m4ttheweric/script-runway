@@ -102,7 +102,7 @@ interface Source {
 }
 
 class SourceStore {
-  private static readonly KEY = "scriptRunner.sources";
+  private static readonly KEY = "runway.sources";
   constructor(private readonly state: vscode.Memento) {}
 
   getAll(): Source[] {
@@ -290,33 +290,35 @@ class ScriptItem extends vscode.TreeItem {
 
       case "npmScript":
         this.contextValue = isOverridden ? "runnable-overridden" : "runnable";
-        this.iconPath = new vscode.ThemeIcon(isOverridden ? "wrench" : "play");
+        this.iconPath = new vscode.ThemeIcon(
+          isOverridden ? "wrench" : "play",
+          isOverridden ? undefined : new vscode.ThemeColor("terminal.ansiGreen")
+        );
         if (!customLabel) this.description = effectiveCommand;
         this.tooltip = isOverridden
           ? `Override: ${override}\nDefault: ${script.defaultCommand}`
           : script.defaultCommand;
-        this.command = { command: "scriptRunner.run", title: "Run", arguments: [script, effectiveCommand] };
         break;
 
       case "makeTarget":
         this.contextValue = isOverridden ? "runnable-overridden" : "runnable";
-        this.iconPath = new vscode.ThemeIcon(isOverridden ? "wrench" : "symbol-method");
+        this.iconPath = new vscode.ThemeIcon(
+          isOverridden ? "wrench" : "play",
+          isOverridden ? undefined : new vscode.ThemeColor("terminal.ansiGreen")
+        );
         if (!customLabel) this.description = effectiveCommand;
         this.tooltip = isOverridden
           ? `Override: ${override}\nDefault: ${script.defaultCommand}`
           : script.defaultCommand;
-        this.command = { command: "scriptRunner.run", title: "Run", arguments: [script, effectiveCommand] };
         break;
 
       case "fileScript":
         this.contextValue = isOverridden ? "runnable-overridden" : "runnable";
         this.resourceUri = vscode.Uri.file(script.filePath!);
-        if (isOverridden) this.iconPath = new vscode.ThemeIcon("wrench");
         if (!customLabel && isOverridden) this.description = override;
         this.tooltip = isOverridden
           ? `Override: ${override}\nDefault: ${script.defaultCommand}`
           : script.filePath;
-        this.command = { command: "scriptRunner.run", title: "Run", arguments: [script, effectiveCommand] };
         break;
     }
   }
@@ -555,11 +557,11 @@ class ScriptProvider implements vscode.TreeDataProvider<ScriptItem> {
 
 export function activate(context: vscode.ExtensionContext) {
   const sources = new SourceStore(context.workspaceState);
-  const overrides = new ScriptStore(context.workspaceState, "scriptRunner.overrides");
-  const labels = new ScriptStore(context.workspaceState, "scriptRunner.labels");
+  const overrides = new ScriptStore(context.workspaceState, "runway.overrides");
+  const labels = new ScriptStore(context.workspaceState, "runway.labels");
   const provider = new ScriptProvider(context.extensionUri, sources, overrides, labels);
 
-  const treeView = vscode.window.createTreeView("scriptRunnerView", {
+  const treeView = vscode.window.createTreeView("runwayView", {
     treeDataProvider: provider,
     showCollapseAll: true,
   });
@@ -575,18 +577,23 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     treeView,
 
-    vscode.commands.registerCommand("scriptRunner.refresh", () => {
+    vscode.commands.registerCommand("runway.refresh", () => {
       provider.refresh();
       updateMessage();
     }),
 
     vscode.commands.registerCommand(
-      "scriptRunner.run",
-      (script: Script, effectiveCommand: string) => runInTerminal(script, effectiveCommand)
+      "runway.run",
+      (item: ScriptItem) => {
+        const { script } = item;
+        const override = script.id ? overrides.get(script.id) : undefined;
+        const command = override ?? script.defaultCommand ?? "";
+        runInTerminal(script, command);
+      }
     ),
 
     vscode.commands.registerCommand(
-      "scriptRunner.setOverride",
+      "runway.setOverride",
       async (item: ScriptItem) => {
         const { script } = item;
         if (!script.id) return;
@@ -603,7 +610,7 @@ export function activate(context: vscode.ExtensionContext) {
     ),
 
     vscode.commands.registerCommand(
-      "scriptRunner.clearOverride",
+      "runway.clearOverride",
       async (item: ScriptItem) => {
         if (!item.script.id) return;
         await overrides.clear(item.script.id);
@@ -612,7 +619,7 @@ export function activate(context: vscode.ExtensionContext) {
     ),
 
     vscode.commands.registerCommand(
-      "scriptRunner.setLabel",
+      "runway.setLabel",
       async (item: ScriptItem) => {
         const { script } = item;
         if (!script.id) return;
@@ -631,7 +638,7 @@ export function activate(context: vscode.ExtensionContext) {
     ),
 
     vscode.commands.registerCommand(
-      "scriptRunner.clearLabel",
+      "runway.clearLabel",
       async (item: ScriptItem) => {
         if (!item.script.id) return;
         await labels.clear(item.script.id);
@@ -640,7 +647,7 @@ export function activate(context: vscode.ExtensionContext) {
     ),
 
     vscode.commands.registerCommand(
-      "scriptRunner.removeSource",
+      "runway.removeSource",
       async (item: ScriptItem) => {
         const src = item.script.sourcePath ?? item.script.filePath;
         if (!src) return;
@@ -651,7 +658,7 @@ export function activate(context: vscode.ExtensionContext) {
     ),
 
     vscode.commands.registerCommand(
-      "scriptRunner.manageSources",
+      "runway.manageSources",
       async () => {
         const all = sources.getAll();
         if (!all.length) {
@@ -674,7 +681,7 @@ export function activate(context: vscode.ExtensionContext) {
       }
     ),
 
-    vscode.commands.registerCommand("scriptRunner.add", async () => {
+    vscode.commands.registerCommand("runway.add", async () => {
       const choice = await vscode.window.showQuickPick(
         [
           { label: "$(package)  Add package.json", value: "packageJson" },
@@ -687,7 +694,7 @@ export function activate(context: vscode.ExtensionContext) {
       if (!choice) return;
 
       if (choice.value === "manage") {
-        await vscode.commands.executeCommand("scriptRunner.manageSources");
+        await vscode.commands.executeCommand("runway.manageSources");
         return;
       }
 
@@ -709,9 +716,25 @@ export function deactivate() {}
 // ---------------------------------------------------------------------------
 
 function runInTerminal(script: Script, command: string) {
-  const terminal = vscode.window.createTerminal({ name: script.label, cwd: script.cwd });
-  terminal.show();
-  terminal.sendText(command);
+  const existing = vscode.window.terminals.find(t => t.name === script.label);
+
+  if (existing) {
+    // Shell already running — interrupt anything in progress then send
+    existing.show();
+    existing.sendText("\x03");
+    setTimeout(() => existing.sendText(command), 100);
+  } else {
+    // Launch a new terminal that runs the command directly via shellArgs,
+    // then drops into an interactive shell — avoids the PTY echo artifact
+    const shell = process.env.SHELL ?? "/bin/zsh";
+    const terminal = vscode.window.createTerminal({
+      name: script.label,
+      cwd: script.cwd,
+      shellPath: shell,
+      shellArgs: ["-i", "-c", `${command}; exec ${shell} -l`],
+    });
+    terminal.show();
+  }
 }
 
 // ---------------------------------------------------------------------------

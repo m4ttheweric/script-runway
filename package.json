@@ -1,25 +1,21 @@
 {
-  "name": "runway-script-runner",
-  "displayName": "Runway",
+  "name": "runway",
+  "displayName": "Script Runway",
   "description": "Run npm, shell, Python, Swift, Go and more from a smart sidebar. Add any package.json or script directory and launch with one click.",
-  "version": "1.0.0",
-  "publisher": "YOUR_PUBLISHER_ID",
+  "version": "1.1.4",
+  "publisher": "m4ttheweric",
   "icon": "images/icon.png",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/YOUR_USERNAME/vscode-script-runner"
+    "url": "https://github.com/m4ttheweric/runway"
   },
   "bugs": {
-    "url": "https://github.com/YOUR_USERNAME/vscode-script-runner/issues"
+    "url": "https://github.com/m4ttheweric/runway/issues"
   },
-  "homepage": "https://github.com/YOUR_USERNAME/vscode-script-runner#readme",
-  "engines": {
-    "vscode": "^1.85.0"
-  },
-  "categories": [
-    "Other"
-  ],
+  "homepage": "https://github.com/m4ttheweric/runway#readme",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Other"],
   "keywords": [
     "scripts",
     "npm",
@@ -46,7 +42,7 @@
       "activitybar": [
         {
           "id": "runway",
-          "title": "Runway",
+          "title": "Script Runway",
           "icon": "images/icon.svg"
         }
       ]
@@ -54,99 +50,69 @@
     "views": {
       "runway": [
         {
-          "id": "scriptRunnerView",
-          "name": "Scripts"
+          "id": "runwayView",
+          "name": "Script Runway"
         }
       ]
     },
     "commands": [
-      {
-        "command": "scriptRunner.refresh",
-        "title": "Refresh",
-        "icon": "$(refresh)"
-      },
-      {
-        "command": "scriptRunner.add",
-        "title": "Add...",
-        "icon": "$(add)"
-      },
-      {
-        "command": "scriptRunner.run",
-        "title": "Run Script",
-        "icon": "$(play)"
-      },
-      {
-        "command": "scriptRunner.setOverride",
-        "title": "Set Command Override..."
-      },
-      {
-        "command": "scriptRunner.clearOverride",
-        "title": "Clear Override"
-      },
-      {
-        "command": "scriptRunner.setLabel",
-        "title": "Set Display Name..."
-      },
-      {
-        "command": "scriptRunner.clearLabel",
-        "title": "Clear Display Name"
-      },
-      {
-        "command": "scriptRunner.removeSource",
-        "title": "Remove"
-      },
-      {
-        "command": "scriptRunner.manageSources",
-        "title": "Remove Sources..."
-      }
+      { "command": "runway.refresh",      "title": "Refresh",               "icon": "$(refresh)" },
+      { "command": "runway.add",           "title": "Add...",                "icon": "$(add)" },
+      { "command": "runway.run",           "title": "Run Script",            "icon": "$(play)" },
+      { "command": "runway.setOverride",   "title": "Set Command Override..." },
+      { "command": "runway.clearOverride", "title": "Clear Override" },
+      { "command": "runway.setLabel",      "title": "Set Display Name..." },
+      { "command": "runway.clearLabel",    "title": "Clear Display Name" },
+      { "command": "runway.removeSource",  "title": "Remove" },
+      { "command": "runway.manageSources", "title": "Remove Sources..." }
     ],
     "menus": {
       "view/title": [
         {
-          "command": "scriptRunner.refresh",
-          "when": "view == scriptRunnerView",
+          "command": "runway.refresh",
+          "when": "view == runwayView",
           "group": "navigation@2"
         },
         {
-          "command": "scriptRunner.add",
-          "when": "view == scriptRunnerView",
+          "command": "runway.add",
+          "when": "view == runwayView",
           "group": "navigation@1"
         }
       ],
       "view/item/context": [
         {
-          "command": "scriptRunner.run",
-          "when": "view == scriptRunnerView && viewItem =~ /^runnable/",
+          "command": "runway.run",
+          "when": "view == runwayView && viewItem =~ /^runnable/",
           "group": "inline"
         },
         {
-          "command": "scriptRunner.run",
-          "when": "view == scriptRunnerView && viewItem =~ /^runnable/",
+          "command": "runway.run",
+          "when": "view == runwayView && viewItem =~ /^runnable/",
           "group": "1_run@1"
         },
         {
-          "command": "scriptRunner.setOverride",
-          "when": "view == scriptRunnerView && viewItem =~ /^runnable/",
+          "command": "runway.setOverride",
+          "when": "view == runwayView && viewItem =~ /^runnable/",
           "group": "2_override@1"
         },
         {
-          "command": "scriptRunner.clearOverride",
-          "when": "view == scriptRunnerView && viewItem == runnable-overridden",
+          "command": "runway.clearOverride",
+          "when": "view == runwayView && viewItem == runnable-overridden",
           "group": "2_override@2"
         },
         {
-          "command": "scriptRunner.setLabel",
-          "when": "view == scriptRunnerView && viewItem =~ /^runnable/",
+          "command": "runway.setLabel",
+          "when": "view == runwayView && viewItem =~ /^runnable/",
           "group": "3_label@1"
         },
         {
-          "command": "scriptRunner.clearLabel",
-          "when": "view == scriptRunnerView && viewItem =~ /^runnable/",
+          "command": "runway.clearLabel",
+          "when": "view == runwayView && viewItem =~ /^runnable/",
           "group": "3_label@2"
         },
         {
-          "command": "scriptRunner.removeSource",
-          "when": "view == scriptRunnerView && (viewItem == packageGroup || viewItem == makeGroup || viewItem == fileCategory)",
+          "command": "runway.removeSource",
+          "when": "view == runwayView && (viewItem == packageGroup || viewItem == makeGroup || viewItem == fileCategory)",
           "group": "9_remove"
         }
       ]
@@ -161,6 +127,6 @@
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.85.0",
     "@vscode/vsce": "^3.7.1",
-    "typescript": "^5.3.0"
+    "typescript": "^5.9.3"
   }
 }
