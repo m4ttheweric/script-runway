@@ -2,18 +2,18 @@
   "name": "runway",
   "displayName": "Script Runway",
   "description": "Run npm, shell, Python, Swift, Go and more from a smart sidebar. Add any package.json or script directory and launch with one click.",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "publisher": "m4ttheweric",
   "icon": "images/icon.png",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/m4ttheweric/runway"
+    "url": "https://github.com/m4ttheweric/script-runway"
   },
   "bugs": {
-    "url": "https://github.com/m4ttheweric/runway/issues"
+    "url": "https://github.com/m4ttheweric/script-runway/issues"
   },
-  "homepage": "https://github.com/m4ttheweric/runway#readme",
+  "homepage": "https://github.com/m4ttheweric/script-runway#readme",
   "engines": {
     "vscode": "^1.100.0"
   },

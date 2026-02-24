@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.3.2] — 2026-02-23
+
+Fix repository, bugs, and homepage URLs in package.json to point to the correct GitHub repo.
+
 ## [1.3.1] — 2026-02-23
 
 Updated readme with full feature documentation, script icon reference table, and VS Code Marketplace badge.
