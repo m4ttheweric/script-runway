@@ -1,3 +1,4 @@
+import { exec } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
@@ -11,6 +12,8 @@ interface FileScriptType {
   label: string;
   extensions: string[];
   iconFile: string;
+  /** Optional separate icon for individual file items (falls back to theme resourceUri if unset) */
+  fileIconFile?: string;
   makeCommand: (filename: string) => string;
   boilerplate: string;
 }
@@ -18,7 +21,7 @@ interface FileScriptType {
 const FILE_SCRIPT_TYPES: FileScriptType[] = [
   {
     kind: "shell", label: "Shell Scripts",
-    extensions: [".sh", ".bash", ".zsh"], iconFile: "shell.svg",
+    extensions: [".sh", ".bash", ".zsh"], iconFile: "shell.svg", fileIconFile: "emoji-shell.svg",
     makeCommand: (f) => `bash "${f}"`,
     boilerplate: "#!/bin/bash\nset -e\n\n# TODO: add your commands here\n",
   },
@@ -158,7 +161,24 @@ class ScriptStore {
 
 type PM = "npm" | "pnpm" | "yarn" | "bun";
 
+/**
+ * Scans canonical lifecycle script commands for unambiguous PM CLI invocations.
+ * Only looks at well-known scripts (start, dev, build, run, test) to avoid
+ * false signals from one-off tool calls in less predictable scripts.
+ * Checked in specificity order so e.g. "pnpm" wins over a stray "npx".
+ */
+function inferPMFromScripts(scripts: Record<string, string>): PM | undefined {
+  const LIFECYCLE = ["start", "dev", "build", "run"];
+  const combined = LIFECYCLE.flatMap((k) => (scripts[k] ? [scripts[k]] : [])).join("\n");
+  if (/\bpnpm\b/.test(combined)) return "pnpm";
+  if (/\bbunx\b|\bbun\s/.test(combined)) return "bun";
+  if (/\byarn\b/.test(combined)) return "yarn";
+  if (/\bnpx\b/.test(combined)) return "npm";
+  return undefined;
+}
+
 function detectPM(pkgDir: string): PM {
+  // 1. Explicit packageManager field
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(pkgDir, "package.json"), "utf8"));
     if (typeof pkg.packageManager === "string") {
@@ -166,12 +186,19 @@ function detectPM(pkgDir: string): PM {
       if (pkg.packageManager.startsWith("yarn")) return "yarn";
       if (pkg.packageManager.startsWith("bun")) return "bun";
     }
-  } catch { /* ignore */ }
 
-  if (fs.existsSync(path.join(pkgDir, "pnpm-lock.yaml"))) return "pnpm";
-  if (fs.existsSync(path.join(pkgDir, "bun.lockb"))) return "bun";
-  if (fs.existsSync(path.join(pkgDir, "yarn.lock"))) return "yarn";
-  if (fs.existsSync(path.join(pkgDir, "package-lock.json"))) return "npm";
+    // 2. Lock files (more reliable than script text)
+    if (fs.existsSync(path.join(pkgDir, "pnpm-lock.yaml"))) return "pnpm";
+    if (fs.existsSync(path.join(pkgDir, "bun.lockb"))) return "bun";
+    if (fs.existsSync(path.join(pkgDir, "yarn.lock"))) return "yarn";
+    if (fs.existsSync(path.join(pkgDir, "package-lock.json"))) return "npm";
+
+    // 3. Infer from script command patterns
+    if (pkg.scripts && typeof pkg.scripts === "object") {
+      const inferred = inferPMFromScripts(pkg.scripts);
+      if (inferred) return inferred;
+    }
+  } catch { /* ignore */ }
 
   return "npm";
 }
@@ -203,6 +230,44 @@ function parseMakeTargets(filePath: string): string[] {
     }
     return targets;
   } catch { return []; }
+}
+
+// ---------------------------------------------------------------------------
+// Script name → icon mapping
+// ---------------------------------------------------------------------------
+
+type ScriptIcon = vscode.ThemeIcon | { light: vscode.Uri; dark: vscode.Uri };
+
+/**
+ * Returns an icon for well-known npm script names, or undefined for
+ * anything that doesn't match a recognisable pattern.
+ * Matches exact names or names starting with the keyword followed by
+ * a separator (`:`, `-`, `_`), e.g. "build:watch" → package icon.
+ */
+function iconForScript(name: string, extensionUri: vscode.Uri): ScriptIcon | undefined {
+  const n = name.toLowerCase();
+  const sw = (...prefixes: string[]) =>
+    prefixes.some((p) => n === p || n.startsWith(p + ":") || n.startsWith(p + "-") || n.startsWith(p + "_"));
+
+  const emoji = (file: string) => {
+    const uri = vscode.Uri.joinPath(extensionUri, "images", file);
+    return { light: uri, dark: uri };
+  };
+
+  if (sw("dev", "start", "serve", "server"))                              return emoji("emoji-lightning.svg");
+  if (sw("build", "compile", "bundle"))                                   return emoji("emoji-package.svg");
+  if (sw("test", "spec", "e2e"))                                          return emoji("emoji-test-tube.svg");
+  if (sw("lint", "eslint", "tslint", "stylelint", "format", "fmt", "prettier")) return emoji("emoji-nail-polish.svg");
+  if (sw("typecheck", "type-check", "types", "tsc"))                      return emoji("emoji-magnifier.svg");
+  if (sw("clean", "reset"))                                               return emoji("emoji-broom.svg");
+  if (sw("deploy", "release", "publish"))                                 return emoji("emoji-rocket.svg");
+  if (sw("watch"))                                                        return emoji("emoji-eyes.svg");
+  if (sw("preview"))                                                      return emoji("emoji-eyes.svg");
+  if (sw("migrate", "migration", "seed", "db"))                           return emoji("emoji-cabinet.svg");
+  if (sw("generate", "gen", "scaffold"))                                  return emoji("emoji-sparkles.svg");
+  if (sw("doc", "docs", "storybook"))                                     return emoji("emoji-books.svg");
+  if (sw("install", "setup", "bootstrap"))                                return emoji("emoji-inbox.svg");
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -247,7 +312,8 @@ class ScriptItem extends vscode.TreeItem {
     public readonly script: Script,
     private readonly extensionUri: vscode.Uri,
     overrides: ScriptStore,
-    labels: ScriptStore
+    labels: ScriptStore,
+    runningTerminals: Set<string>
   ) {
     const collapsible =
       script.kind === "packageGroup" ||
@@ -262,6 +328,7 @@ class ScriptItem extends vscode.TreeItem {
     const customLabel = script.id ? labels.get(script.id) : undefined;
     const effectiveCommand = override ?? script.defaultCommand;
     const isOverridden = override !== undefined;
+    const isRunning = script.id !== undefined && runningTerminals.has(script.label);
 
     if (customLabel) {
       this.label = customLabel;
@@ -289,36 +356,54 @@ class ScriptItem extends vscode.TreeItem {
         break;
 
       case "npmScript":
-        this.contextValue = isOverridden ? "runnable-overridden" : "runnable";
-        this.iconPath = new vscode.ThemeIcon(
-          isOverridden ? "wrench" : "play",
-          isOverridden ? undefined : new vscode.ThemeColor("terminal.ansiGreen")
-        );
+        this.contextValue = isRunning
+          ? (isOverridden ? "runnable-active-overridden" : "runnable-active")
+          : (isOverridden ? "runnable-idle-overridden" : "runnable-idle");
+        this.iconPath = isOverridden
+          ? new vscode.ThemeIcon("wrench")
+          : iconForScript(script.label, extensionUri);
+        if (isRunning) this.resourceUri = vscode.Uri.parse(`runway-running://${encodeURIComponent(script.label)}`);
         if (!customLabel) this.description = effectiveCommand;
-        this.tooltip = isOverridden
-          ? `Override: ${override}\nDefault: ${script.defaultCommand}`
-          : script.defaultCommand;
+        this.tooltip = isRunning
+          ? `Running — double-click to stop\n${script.defaultCommand}`
+          : isOverridden
+            ? `Override: ${override}\nDefault: ${script.defaultCommand}`
+            : script.defaultCommand;
+        this.command = { command: "runway.itemClicked", title: "Run", arguments: [this] };
         break;
 
       case "makeTarget":
-        this.contextValue = isOverridden ? "runnable-overridden" : "runnable";
-        this.iconPath = new vscode.ThemeIcon(
-          isOverridden ? "wrench" : "play",
-          isOverridden ? undefined : new vscode.ThemeColor("terminal.ansiGreen")
-        );
+        this.contextValue = isRunning
+          ? (isOverridden ? "runnable-active-overridden" : "runnable-active")
+          : (isOverridden ? "runnable-idle-overridden" : "runnable-idle");
+        this.iconPath = isOverridden ? new vscode.ThemeIcon("wrench") : undefined;
+        if (isRunning) this.resourceUri = vscode.Uri.parse(`runway-running://${encodeURIComponent(script.label)}`);
         if (!customLabel) this.description = effectiveCommand;
-        this.tooltip = isOverridden
-          ? `Override: ${override}\nDefault: ${script.defaultCommand}`
-          : script.defaultCommand;
+        this.command = { command: "runway.itemClicked", title: "Run", arguments: [this] };
+        this.tooltip = isRunning
+          ? `Running — double-click to stop\n${script.defaultCommand}`
+          : isOverridden
+            ? `Override: ${override}\nDefault: ${script.defaultCommand}`
+            : script.defaultCommand;
         break;
 
       case "fileScript":
-        this.contextValue = isOverridden ? "runnable-overridden" : "runnable";
-        this.resourceUri = vscode.Uri.file(script.filePath!);
+        this.contextValue = isRunning
+          ? (isOverridden ? "runnable-active-overridden" : "runnable-active")
+          : (isOverridden ? "runnable-idle-overridden" : "runnable-idle");
+        if (script.iconFile) {
+          this.iconPath = this.svgIcon(script.iconFile);
+        } else {
+          this.resourceUri = vscode.Uri.file(script.filePath!);
+        }
+        if (isRunning) this.resourceUri = vscode.Uri.parse(`runway-running://${encodeURIComponent(script.label)}`);
         if (!customLabel && isOverridden) this.description = override;
-        this.tooltip = isOverridden
-          ? `Override: ${override}\nDefault: ${script.defaultCommand}`
-          : script.filePath;
+        this.tooltip = isRunning
+          ? `Running — double-click to stop\n${script.filePath}`
+          : isOverridden
+            ? `Override: ${override}\nDefault: ${script.defaultCommand}`
+            : script.filePath;
+        this.command = { command: "runway.itemClicked", title: "Run", arguments: [this] };
         break;
     }
   }
@@ -341,7 +426,8 @@ class ScriptProvider implements vscode.TreeDataProvider<ScriptItem> {
     private readonly extensionUri: vscode.Uri,
     private readonly sources: SourceStore,
     private readonly overrides: ScriptStore,
-    private readonly labels: ScriptStore
+    private readonly labels: ScriptStore,
+    private readonly runningTerminals: Set<string>
   ) {}
 
   refresh() { this._onChange.fire(); }
@@ -541,13 +627,80 @@ class ScriptProvider implements vscode.TreeDataProvider<ScriptItem> {
       cwd,
       filePath: absPath,
       sourcePath: absPath,
+      iconFile: type.fileIconFile,
     });
   }
 
   // -- Helper --------------------------------------------------------------
 
   private item(script: Script): ScriptItem {
-    return new ScriptItem(script, this.extensionUri, this.overrides, this.labels);
+    return new ScriptItem(script, this.extensionUri, this.overrides, this.labels, this.runningTerminals);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Watcher manager — keeps FileSystemWatchers in sync with the source list
+// ---------------------------------------------------------------------------
+
+class WatcherManager implements vscode.Disposable {
+  private readonly watchers = new Map<string, vscode.Disposable[]>();
+
+  constructor(
+    private readonly sources: SourceStore,
+    private readonly onRefresh: () => void
+  ) {}
+
+  /** Call after any source is added or removed to reconcile watchers. */
+  sync() {
+    const all = this.sources.getAll();
+    const currentPaths = new Set(all.map((s) => s.path));
+
+    // Tear down watchers for sources that were removed
+    for (const [p, disposables] of this.watchers) {
+      if (!currentPaths.has(p)) {
+        disposables.forEach((d) => d.dispose());
+        this.watchers.delete(p);
+      }
+    }
+
+    // Set up watchers for newly added sources
+    for (const src of all) {
+      if (this.watchers.has(src.path)) continue;
+
+      const disposables: vscode.Disposable[] = [];
+
+      if (src.type === "packageJson") {
+        // Watch the specific package.json file for edits
+        const dir = vscode.Uri.file(path.dirname(src.path));
+        const watcher = vscode.workspace.createFileSystemWatcher(
+          new vscode.RelativePattern(dir, path.basename(src.path))
+        );
+        watcher.onDidChange(this.onRefresh);
+        watcher.onDidCreate(this.onRefresh);
+        watcher.onDidDelete(this.onRefresh);
+        disposables.push(watcher);
+      } else if (src.type === "directory") {
+        // Watch for any file added/removed/changed directly inside the directory
+        // (covers new script files and Makefile edits)
+        const dir = vscode.Uri.file(src.path);
+        const watcher = vscode.workspace.createFileSystemWatcher(
+          new vscode.RelativePattern(dir, "*")
+        );
+        watcher.onDidChange(this.onRefresh);
+        watcher.onDidCreate(this.onRefresh);
+        watcher.onDidDelete(this.onRefresh);
+        disposables.push(watcher);
+      }
+
+      this.watchers.set(src.path, disposables);
+    }
+  }
+
+  dispose() {
+    for (const disposables of this.watchers.values()) {
+      disposables.forEach((d) => d.dispose());
+    }
+    this.watchers.clear();
   }
 }
 
@@ -555,16 +708,171 @@ class ScriptProvider implements vscode.TreeDataProvider<ScriptItem> {
 // Activation
 // ---------------------------------------------------------------------------
 
+class RunningDecorationProvider implements vscode.FileDecorationProvider {
+  private readonly _onDidChange = new vscode.EventEmitter<vscode.Uri | vscode.Uri[]>();
+  readonly onDidChangeFileDecorations = this._onDidChange.event;
+
+  provideFileDecoration(uri: vscode.Uri): vscode.FileDecoration | undefined {
+    if (uri.scheme === "runway-running") {
+      return {
+        badge: "▶",
+        color: new vscode.ThemeColor("list.warningForeground"),
+        propagate: false,
+      };
+    }
+    return undefined;
+  }
+
+  fire(uris: vscode.Uri[]) {
+    this._onDidChange.fire(uris);
+  }
+}
+
 export function activate(context: vscode.ExtensionContext) {
   const sources = new SourceStore(context.workspaceState);
   const overrides = new ScriptStore(context.workspaceState, "runway.overrides");
   const labels = new ScriptStore(context.workspaceState, "runway.labels");
-  const provider = new ScriptProvider(context.extensionUri, sources, overrides, labels);
+  // Seeded with any terminals already open when the extension activates
+  const runningTerminals = new Set<string>(vscode.window.terminals.map((t) => t.name));
+  const provider = new ScriptProvider(context.extensionUri, sources, overrides, labels, runningTerminals);
+  const decorationProvider = new RunningDecorationProvider();
 
   const treeView = vscode.window.createTreeView("runwayView", {
     treeDataProvider: provider,
     showCollapseAll: true,
   });
+
+  context.subscriptions.push(
+    vscode.window.registerFileDecorationProvider(decorationProvider)
+  );
+
+  const watcherManager = new WatcherManager(sources, () => provider.refresh());
+  // Attach watchers for any sources persisted from a previous session
+  watcherManager.sync();
+
+  function markRunning(name: string) {
+    runningTerminals.add(name);
+    decorationProvider.fire([vscode.Uri.parse(`runway-running://${encodeURIComponent(name)}`)]);
+    provider.refresh();
+  }
+
+  function markStopped(name: string) {
+    runningTerminals.delete(name);
+    decorationProvider.fire([vscode.Uri.parse(`runway-running://${encodeURIComponent(name)}`)]);
+    provider.refresh();
+  }
+
+  // terminal name → command waiting for shell integration to activate
+  const pendingCommands = new Map<string, string>();
+  // terminal name → the TerminalShellExecution we started (to match end events)
+  const trackedExecutions = new Map<string, vscode.TerminalShellExecution>();
+
+  // Track terminal lifecycle to update running indicators and decorations
+  context.subscriptions.push(
+    vscode.window.onDidOpenTerminal((t) => markRunning(t.name)),
+    vscode.window.onDidCloseTerminal((t) => {
+      pendingCommands.delete(t.name);
+      trackedExecutions.delete(t.name);
+      markStopped(t.name);
+    }),
+
+    // Shell integration activated — run the pending command via executeCommand
+    // so that onDidEndTerminalShellExecution fires when it exits.
+    vscode.window.onDidChangeTerminalShellIntegration(({ terminal, shellIntegration }) => {
+      const command = pendingCommands.get(terminal.name);
+      if (command) {
+        pendingCommands.delete(terminal.name);
+        const execution = shellIntegration.executeCommand(command);
+        trackedExecutions.set(terminal.name, execution);
+      }
+    }),
+
+    // Fired when a shell-integration-tracked command ends (Ctrl+C, crash, natural exit).
+    vscode.window.onDidEndTerminalShellExecution((event) => {
+      const name = event.terminal.name;
+      if (trackedExecutions.get(name) === event.execution) {
+        trackedExecutions.delete(name);
+        markStopped(name);
+      }
+    })
+  );
+
+  // Double-click to run (or stop if already running).
+  // Uses TreeItem.command rather than onDidChangeSelection so it fires even
+  // when the item is already selected.
+  let lastClickKey = "";
+  let lastClickTime = 0;
+  context.subscriptions.push(
+    vscode.commands.registerCommand("runway.itemClicked", (item: ScriptItem) => {
+      if (!item?.script.id) return;
+
+      const key = item.script.id;
+      const now = Date.now();
+      const { script } = item;
+      const terminal = vscode.window.terminals.find((t) => t.name === script.label);
+
+      if (key === lastClickKey && now - lastClickTime < 300) {
+        // Double-click
+        if (terminal && runningTerminals.has(script.label)) {
+          // Script is running — stop it
+          terminal.sendText("\x03");
+          terminal.show();
+          markStopped(script.label);
+        } else {
+          // Not running — start it
+          const override = script.id ? overrides.get(script.id) : undefined;
+          runInTerminal(script, override ?? script.defaultCommand ?? "", markRunning, pendingCommands, trackedExecutions);
+        }
+        lastClickKey = "";
+      } else {
+        // Single click — focus existing terminal if one is open
+        if (terminal) terminal.show();
+        lastClickKey = key;
+        lastClickTime = now;
+      }
+    }),
+
+    ...["Terminal", "Warp", "iTerm", "iTerm2"].map((app) =>
+      vscode.commands.registerCommand(`runway.openInSystemTerminal.${app}`, (item: ScriptItem) => {
+        const { script } = item;
+        const override = script.id ? overrides.get(script.id) : undefined;
+        const command = override ?? script.defaultCommand ?? "";
+        openInSystemTerminal(script.cwd ?? "", command);
+      })
+    ),
+
+    vscode.commands.registerCommand("runway.openSourceFile", async (item: ScriptItem) => {
+      const { script } = item;
+      const filePath = script.filePath;
+      if (!filePath) return;
+
+      const uri = vscode.Uri.file(filePath);
+
+      if (script.kind === "npmScript") {
+        // Jump to the exact line of this script in package.json
+        const doc = await vscode.workspace.openTextDocument(uri);
+        const match = new RegExp(`"${script.label}"\\s*:`).exec(doc.getText());
+        if (match) {
+          const pos = doc.positionAt(match.index);
+          await vscode.window.showTextDocument(doc, {
+            selection: new vscode.Range(pos, pos),
+          });
+          return;
+        }
+      }
+
+      await vscode.commands.executeCommand("vscode.open", uri);
+    }),
+
+    vscode.commands.registerCommand("runway.stop", (item: ScriptItem) => {
+      const terminal = vscode.window.terminals.find((t) => t.name === item.script.label);
+      if (terminal) {
+        terminal.sendText("\x03");
+        terminal.show();
+        markStopped(item.script.label);
+      }
+    })
+  );
 
   // Show welcome message when no sources are added
   function updateMessage() {
@@ -576,6 +884,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     treeView,
+    watcherManager,
 
     vscode.commands.registerCommand("runway.refresh", () => {
       provider.refresh();
@@ -588,7 +897,7 @@ export function activate(context: vscode.ExtensionContext) {
         const { script } = item;
         const override = script.id ? overrides.get(script.id) : undefined;
         const command = override ?? script.defaultCommand ?? "";
-        runInTerminal(script, command);
+        runInTerminal(script, command, markRunning, pendingCommands, trackedExecutions);
       }
     ),
 
@@ -652,6 +961,7 @@ export function activate(context: vscode.ExtensionContext) {
         const src = item.script.sourcePath ?? item.script.filePath;
         if (!src) return;
         await sources.remove(src);
+        watcherManager.sync();
         provider.refresh();
         updateMessage();
       }
@@ -676,6 +986,7 @@ export function activate(context: vscode.ExtensionContext) {
         });
         if (!picked?.length) return;
         for (const p of picked) await sources.remove(p.path);
+        watcherManager.sync();
         provider.refresh();
         updateMessage();
       }
@@ -699,11 +1010,11 @@ export function activate(context: vscode.ExtensionContext) {
       }
 
       if (choice.value === "packageJson") {
-        await addPackageJson(sources, provider, updateMessage);
+        await addPackageJson(sources, provider, watcherManager, updateMessage);
       } else if (choice.value === "directory") {
-        await addDirectory(sources, provider, updateMessage);
+        await addDirectory(sources, provider, watcherManager, updateMessage);
       } else {
-        await addFile(sources, provider, updateMessage);
+        await addFile(sources, provider, watcherManager, updateMessage);
       }
     })
   );
@@ -715,25 +1026,105 @@ export function deactivate() {}
 // Terminal runner
 // ---------------------------------------------------------------------------
 
-function runInTerminal(script: Script, command: string) {
+function openInSystemTerminal(cwd: string, command: string) {
+  const escaped = (s: string) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  const fullCmd = cwd ? `cd "${escaped(cwd)}" && ${command}` : command;
+
+  if (process.platform === "darwin") {
+    const app = (vscode.workspace.getConfiguration("runway").get<string>("systemTerminalApp") ?? "Terminal").trim();
+    const appLower = app.toLowerCase();
+
+    if (appLower === "warp") {
+      // Write a self-deleting temp script and open it in Warp
+      const tmpFile = `/tmp/runway_${Date.now()}.sh`;
+      fs.writeFileSync(tmpFile, `#!/bin/zsh\n${fullCmd}\nrm -- "$0"\n`, { mode: 0o755 });
+      exec(`open -a Warp "${tmpFile}"`);
+
+    } else if (appLower === "iterm" || appLower === "iterm2") {
+      const safeCmd = fullCmd.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+      const script = `tell application "iTerm2"
+  create window with default profile command "bash -c \\"${safeCmd}; exec bash\\""
+  activate
+end tell`;
+      exec(`osascript -e '${script.replace(/'/g, "'\\''")}'`);
+
+    } else {
+      // Terminal.app (default) and any other app via AppleScript do script
+      const safeCmd = fullCmd.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+      const script = `tell application "${app}"
+  do script "${safeCmd}"
+  activate
+end tell`;
+      exec(`osascript -e '${script.replace(/'/g, "'\\''")}'`);
+    }
+
+  } else if (process.platform === "win32") {
+    exec(`start cmd /K "${escaped(fullCmd)}"`);
+
+  } else {
+    // Linux: try common terminal emulators in order of preference
+    const emulators = [
+      `gnome-terminal -- bash -c "${escaped(fullCmd)}; exec bash"`,
+      `xterm -e bash -c "${escaped(fullCmd)}; exec bash"`,
+      `konsole -e bash -c "${escaped(fullCmd)}; exec bash"`,
+    ];
+    (function tryNext(i: number) {
+      if (i >= emulators.length) return;
+      exec(emulators[i], (err) => { if (err) tryNext(i + 1); });
+    })(0);
+  }
+}
+
+function runInTerminal(
+  script: Script,
+  command: string,
+  onStart: ((name: string) => void) | undefined,
+  pendingCommands: Map<string, string>,
+  trackedExecutions: Map<string, vscode.TerminalShellExecution>
+) {
   const existing = vscode.window.terminals.find(t => t.name === script.label);
 
   if (existing) {
-    // Shell already running — interrupt anything in progress then send
     existing.show();
-    existing.sendText("\x03");
-    setTimeout(() => existing.sendText(command), 100);
+    if (existing.shellIntegration) {
+      // Shell integration already active — interrupt anything running then re-execute
+      existing.sendText("\x03");
+      setTimeout(() => {
+        const execution = existing.shellIntegration!.executeCommand(command);
+        trackedExecutions.set(existing.name, execution);
+        onStart?.(existing.name);
+      }, 100);
+    } else {
+      // No shell integration on this terminal — queue for when it activates,
+      // with a fallback to sendText after 3 s.
+      existing.sendText("\x03");
+      pendingCommands.set(existing.name, command);
+      setTimeout(() => {
+        if (pendingCommands.get(existing.name) === command) {
+          pendingCommands.delete(existing.name);
+          existing.sendText(command);
+        }
+        onStart?.(existing.name);
+      }, 3000);
+    }
   } else {
-    // Launch a new terminal that runs the command directly via shellArgs,
-    // then drops into an interactive shell — avoids the PTY echo artifact
     const shell = process.env.SHELL ?? "/bin/zsh";
     const terminal = vscode.window.createTerminal({
       name: script.label,
       cwd: script.cwd,
       shellPath: shell,
-      shellArgs: ["-i", "-c", `${command}; exec ${shell} -l`],
     });
     terminal.show();
+    // Queue the command — onDidChangeTerminalShellIntegration will execute it.
+    // Fall back to sendText after 3 s if shell integration never activates.
+    pendingCommands.set(script.label, command);
+    setTimeout(() => {
+      if (pendingCommands.get(script.label) === command) {
+        pendingCommands.delete(script.label);
+        terminal.sendText(command);
+      }
+      // onDidOpenTerminal already called markRunning for new terminals
+    }, 3000);
   }
 }
 
@@ -744,6 +1135,7 @@ function runInTerminal(script: Script, command: string) {
 async function addPackageJson(
   sources: SourceStore,
   provider: ScriptProvider,
+  watcherManager: WatcherManager,
   updateMessage: () => void
 ) {
   const wsRoot = vscode.workspace.workspaceFolders?.[0].uri;
@@ -769,6 +1161,7 @@ async function addPackageJson(
   }
 
   if (added > 0) {
+    watcherManager.sync();
     provider.refresh();
     updateMessage();
   }
@@ -777,6 +1170,7 @@ async function addPackageJson(
 async function addDirectory(
   sources: SourceStore,
   provider: ScriptProvider,
+  watcherManager: WatcherManager,
   updateMessage: () => void
 ) {
   const wsRoot = vscode.workspace.workspaceFolders?.[0].uri;
@@ -796,6 +1190,7 @@ async function addDirectory(
   }
 
   if (added > 0) {
+    watcherManager.sync();
     provider.refresh();
     updateMessage();
   }
@@ -804,6 +1199,7 @@ async function addDirectory(
 async function addFile(
   sources: SourceStore,
   provider: ScriptProvider,
+  watcherManager: WatcherManager,
   updateMessage: () => void
 ) {
   const wsRoot = vscode.workspace.workspaceFolders?.[0].uri;
@@ -830,6 +1226,7 @@ async function addFile(
   }
 
   if (added > 0) {
+    watcherManager.sync();
     provider.refresh();
     updateMessage();
   }
