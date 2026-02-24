@@ -5,6 +5,8 @@
 
 **Run any script from a smart sidebar panel — npm, shell, Python, Swift, Go, and more.**
 
+[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/m4ttheweric.runway?label=VS%20Code%20Marketplace&logo=visualstudiocode)](https://marketplace.visualstudio.com/items?itemName=m4ttheweric.runway)
+
 </div>
 
 Runway gives you a dedicated sidebar for all the scripts in your project. Add `package.json` files, directories, or individual script files and run them with a single click — no more digging through `package.json` or memorising long commands.
