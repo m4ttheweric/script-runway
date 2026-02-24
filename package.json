@@ -2,7 +2,7 @@
   "name": "runway",
   "displayName": "Script Runway",
   "description": "Run npm, shell, Python, Swift, Go and more from a smart sidebar. Add any package.json or script directory and launch with one click.",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "publisher": "m4ttheweric",
   "icon": "images/icon.png",
   "license": "MIT",

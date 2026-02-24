@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.3.1] — 2026-02-23
+
+Updated readme with full feature documentation, script icon reference table, and VS Code Marketplace badge.
+
 ## [1.3.0] — 2026-02-23
 
 ### New features
