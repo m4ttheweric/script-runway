@@ -2,7 +2,7 @@
   "name": "runway",
   "displayName": "Script Runway",
   "description": "Run npm, shell, Python, Swift, Go and more from a smart sidebar. Add any package.json or script directory and launch with one click.",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "publisher": "m4ttheweric",
   "icon": "images/icon.png",
   "license": "MIT",
@@ -111,6 +111,28 @@
         "command": "runway.stop",
         "title": "Stop",
         "icon": "$(debug-stop)"
+      },
+      {
+        "command": "runway.favorite",
+        "title": "★ Favorite",
+        "icon": "$(star-empty)"
+      },
+      {
+        "command": "runway.unfavorite",
+        "title": "☆ Unfavorite",
+        "icon": "$(star-full)"
+      },
+      {
+        "command": "runway.copyPath",
+        "title": "Copy Path"
+      },
+      {
+        "command": "runway.copyRelativePath",
+        "title": "Copy Relative Path"
+      },
+      {
+        "command": "runway.revealInFinder",
+        "title": "Reveal in Finder"
       }
     ],
     "configuration": {
@@ -185,6 +207,16 @@
           "group": "3_label@2"
         },
         {
+          "command": "runway.favorite",
+          "when": "view == runwayView && viewItem =~ /^runnable-/ && !(viewItem =~ /-fav/)",
+          "group": "4_fav@1"
+        },
+        {
+          "command": "runway.unfavorite",
+          "when": "view == runwayView && viewItem =~ /-fav/",
+          "group": "4_fav@1"
+        },
+        {
           "command": "runway.openInSystemTerminal.Terminal",
           "when": "view == runwayView && viewItem =~ /^runnable-/ && config.runway.systemTerminalApp == 'Terminal'",
           "group": "1_run@2"
@@ -213,6 +245,21 @@
           "command": "runway.removeSource",
           "when": "view == runwayView && (viewItem == packageGroup || viewItem == makeGroup || viewItem == fileCategory)",
           "group": "9_remove"
+        },
+        {
+          "command": "runway.copyPath",
+          "when": "view == runwayView && (viewItem =~ /^runnable-/ || viewItem == packageGroup || viewItem == makeGroup)",
+          "group": "8_file@1"
+        },
+        {
+          "command": "runway.copyRelativePath",
+          "when": "view == runwayView && (viewItem =~ /^runnable-/ || viewItem == packageGroup || viewItem == makeGroup)",
+          "group": "8_file@2"
+        },
+        {
+          "command": "runway.revealInFinder",
+          "when": "view == runwayView && (viewItem =~ /^runnable-/ || viewItem == packageGroup || viewItem == makeGroup)",
+          "group": "8_file@3"
         }
       ]
     }

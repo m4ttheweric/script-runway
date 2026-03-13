@@ -93,6 +93,49 @@ for (const t of FILE_SCRIPT_TYPES) {
 }
 
 // ---------------------------------------------------------------------------
+// Shebang detection — reads the first line of a file to determine interpreter
+// ---------------------------------------------------------------------------
+
+function readShebang(filePath: string): string | undefined {
+  try {
+    const fd = fs.openSync(filePath, "r");
+    const buf = Buffer.alloc(256);
+    const bytesRead = fs.readSync(fd, buf, 0, 256, 0);
+    fs.closeSync(fd);
+    const head = buf.toString("utf8", 0, bytesRead);
+    const nl = head.indexOf("\n");
+    const firstLine = nl >= 0 ? head.slice(0, nl) : head;
+    if (!firstLine.startsWith("#!")) return undefined;
+
+    const shebang = firstLine.slice(2).trim();
+
+    // #!/usr/bin/env [-S] <command...>
+    const envMatch = shebang.match(/^(?:\/usr\/bin\/env|\/bin\/env)\s+(.+)/);
+    if (envMatch) {
+      let cmd = envMatch[1].trim();
+      // strip env flags like -S / --split-string
+      while (cmd.startsWith("-")) {
+        const sp = cmd.indexOf(" ");
+        if (sp < 0) return undefined;
+        cmd = cmd.slice(sp + 1).trimStart();
+      }
+      return cmd || undefined;
+    }
+
+    // #!/usr/bin/node → node,  #!/bin/bash → bash
+    const bin = shebang.split(/\s/)[0];
+    return bin ? path.basename(bin) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isBunShebang(filePath: string): boolean {
+  const cmd = readShebang(filePath);
+  return cmd !== undefined && /^bun\b/.test(cmd);
+}
+
+// ---------------------------------------------------------------------------
 // Source store  (workspace-state — not committed to settings.json)
 // ---------------------------------------------------------------------------
 
@@ -109,7 +152,9 @@ class SourceStore {
   constructor(private readonly state: vscode.Memento) {}
 
   getAll(): Source[] {
-    return this.state.get<Source[]>(SourceStore.KEY) ?? [];
+    const raw = this.state.get<Source[]>(SourceStore.KEY) ?? [];
+    // Normalise any symlink-resolved paths that were stored before the fix
+    return raw.map((s) => ({ ...s, path: resolveToWorkspace(s.path) }));
   }
 
   async add(source: Source): Promise<boolean> {
@@ -208,11 +253,56 @@ function detectPM(pkgDir: string): PM {
 // ---------------------------------------------------------------------------
 
 function displayPath(absPath: string): string {
-  const wsRoot = vscode.workspace.workspaceFolders?.[0].uri.fsPath;
+  const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (wsRoot) {
     const rel = path.relative(wsRoot, absPath);
     if (!rel.startsWith("..")) return rel;
   }
+  return absPath;
+}
+
+/**
+ * If `absPath` is a realpath that lives outside the workspace but has a
+ * symlink inside it, return the in-workspace path instead.  Otherwise
+ * return the path unchanged.  This keeps display labels and cwd rooted
+ * in the workspace even when macOS / VS Code resolves symlinks.
+ */
+function resolveToWorkspace(absPath: string): string {
+  const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!wsRoot) return absPath;
+
+  // Already inside the workspace — nothing to do
+  const rel = path.relative(wsRoot, absPath);
+  if (!rel.startsWith("..")) return absPath;
+
+  // Case 1: The workspace root itself is under a symlink so its realpath
+  // differs from the fsPath VS Code reports.
+  try {
+    const realWs = fs.realpathSync(wsRoot);
+    const relToRealWs = path.relative(realWs, absPath);
+    if (!relToRealWs.startsWith("..")) {
+      return path.join(wsRoot, relToRealWs);
+    }
+  } catch { /* ignore */ }
+
+  // Case 2: A directory *inside* the workspace is a symlink whose real
+  // target is (a prefix of) absPath.  Scan top-level workspace entries.
+  try {
+    for (const entry of fs.readdirSync(wsRoot)) {
+      const entryPath = path.join(wsRoot, entry);
+      let stat: fs.Stats;
+      try { stat = fs.lstatSync(entryPath); } catch { continue; }
+      if (!stat.isSymbolicLink()) continue;
+      let realTarget: string;
+      try { realTarget = fs.realpathSync(entryPath); } catch { continue; }
+      const relToTarget = path.relative(realTarget, absPath);
+      if (!relToTarget.startsWith("..")) {
+        // absPath is under this symlink target — remap through the symlink
+        return path.join(entryPath, relToTarget);
+      }
+    }
+  } catch { /* ignore */ }
+
   return absPath;
 }
 
@@ -280,7 +370,8 @@ type ScriptKind =
   | "makeGroup"
   | "makeTarget"
   | "fileCategory"
-  | "fileScript";
+  | "fileScript"
+  | "moreScripts";
 
 interface Script {
   kind: ScriptKind;
@@ -301,6 +392,10 @@ interface Script {
   categoryKind?: string;
   /** secondary descriptive text shown in the row */
   description?: string;
+  /** whether this script is a favorite */
+  isFavorite?: boolean;
+  /** child items for moreScripts groups */
+  children?: Script[];
 }
 
 // ---------------------------------------------------------------------------
@@ -316,11 +411,13 @@ class ScriptItem extends vscode.TreeItem {
     runningTerminals: Set<string>
   ) {
     const collapsible =
-      script.kind === "packageGroup" ||
-      script.kind === "makeGroup" ||
-      script.kind === "fileCategory"
-        ? vscode.TreeItemCollapsibleState.Expanded
-        : vscode.TreeItemCollapsibleState.None;
+      script.kind === "moreScripts"
+        ? vscode.TreeItemCollapsibleState.Collapsed
+        : (script.kind === "packageGroup" ||
+           script.kind === "makeGroup" ||
+           script.kind === "fileCategory")
+          ? vscode.TreeItemCollapsibleState.Expanded
+          : vscode.TreeItemCollapsibleState.None;
 
     super(script.label, collapsible);
 
@@ -355,15 +452,26 @@ class ScriptItem extends vscode.TreeItem {
         this.iconPath = this.svgIcon(script.iconFile!);
         break;
 
-      case "npmScript":
+      case "moreScripts":
+        this.contextValue = "moreScripts";
+        this.iconPath = new vscode.ThemeIcon("ellipsis");
+        this.tooltip = "Unfavorited scripts";
+        break;
+
+      case "npmScript": {
+        const favSuffix = script.isFavorite ? "-fav" : "";
         this.contextValue = isRunning
-          ? (isOverridden ? "runnable-active-overridden" : "runnable-active")
-          : (isOverridden ? "runnable-idle-overridden" : "runnable-idle");
-        this.iconPath = isOverridden
-          ? new vscode.ThemeIcon("wrench")
-          : iconForScript(script.label, extensionUri);
+          ? (isOverridden ? `runnable-active-overridden${favSuffix}` : `runnable-active${favSuffix}`)
+          : (isOverridden ? `runnable-idle-overridden${favSuffix}` : `runnable-idle${favSuffix}`);
+        if (script.isFavorite) {
+          this.iconPath = new vscode.ThemeIcon("star-full", new vscode.ThemeColor("charts.yellow"));
+        } else {
+          this.iconPath = isOverridden
+            ? new vscode.ThemeIcon("wrench")
+            : iconForScript(script.label, extensionUri);
+        }
         if (isRunning) this.resourceUri = vscode.Uri.parse(`runway-running://${encodeURIComponent(script.label)}`);
-        if (!customLabel) this.description = effectiveCommand;
+        if (!customLabel) this.description = script.description ?? effectiveCommand;
         this.tooltip = isRunning
           ? `Running — double-click to stop\n${script.defaultCommand}`
           : isOverridden
@@ -371,6 +479,7 @@ class ScriptItem extends vscode.TreeItem {
             : script.defaultCommand;
         this.command = { command: "runway.itemClicked", title: "Run", arguments: [this] };
         break;
+      }
 
       case "makeTarget":
         this.contextValue = isRunning
@@ -427,6 +536,7 @@ class ScriptProvider implements vscode.TreeDataProvider<ScriptItem> {
     private readonly sources: SourceStore,
     private readonly overrides: ScriptStore,
     private readonly labels: ScriptStore,
+    private readonly favorites: ScriptStore,
     private readonly runningTerminals: Set<string>
   ) {}
 
@@ -441,6 +551,7 @@ class ScriptProvider implements vscode.TreeDataProvider<ScriptItem> {
       case "packageGroup": return this.npmScripts(parent.script);
       case "makeGroup":    return this.makeTargets(parent.script);
       case "fileCategory": return this.fileCategoryChildren(parent.script);
+      case "moreScripts":  return (parent.script.children ?? []).map((s) => this.item(s));
       default:             return [];
     }
   }
@@ -514,17 +625,39 @@ class ScriptProvider implements vscode.TreeDataProvider<ScriptItem> {
     try {
       const pkg = JSON.parse(fs.readFileSync(group.filePath!, "utf8"));
       const pm = group.pm ?? "npm";
-      return Object.entries<string>(pkg.scripts ?? {}).map(([name, cmd]) =>
-        this.item({
-          kind: "npmScript",
-          label: name,
-          id: `npm:${group.filePath}:${name}`,
-          defaultCommand: `${pm} run ${name}`,
-          cwd: group.cwd,
-          filePath: group.filePath,
-          description: cmd,
-        })
-      );
+      const allScripts = Object.entries<string>(pkg.scripts ?? {}).map(([name, cmd]) => ({
+        kind: "npmScript" as ScriptKind,
+        label: name,
+        id: `npm:${group.filePath}:${name}`,
+        defaultCommand: `${pm} run ${name}`,
+        cwd: group.cwd,
+        filePath: group.filePath,
+        description: cmd,
+      }));
+
+      // Check if any scripts in this group are favorited
+      const favIds = allScripts.filter((s) => this.favorites.get(s.id!) === "1");
+      if (favIds.length === 0) {
+        // No favorites — show everything as before
+        return allScripts.map((s) => this.item(s));
+      }
+
+      // Split into favorites and the rest
+      const favs = allScripts
+        .filter((s) => this.favorites.get(s.id!) === "1")
+        .map((s) => this.item({ ...s, isFavorite: true }));
+      const rest = allScripts.filter((s) => this.favorites.get(s.id!) !== "1");
+
+      if (rest.length === 0) return favs;
+
+      // Add a collapsed "More Scripts" group for unfavorited items
+      const moreGroup = this.item({
+        kind: "moreScripts",
+        label: `More Scripts (${rest.length})`,
+        children: rest,
+      });
+
+      return [...favs, moreGroup];
     } catch { return []; }
   }
 
@@ -550,23 +683,54 @@ class ScriptProvider implements vscode.TreeDataProvider<ScriptItem> {
     const fileSources = all.filter((s) => s.type === "file");
     const categories: ScriptItem[] = [];
 
+    // Identify files with bun shebangs so we can separate them
+    const bunFiles = new Set<string>();
+    for (const src of dirSources) {
+      if (!fs.existsSync(src.path)) continue;
+      for (const f of fs.readdirSync(src.path)) {
+        if (!EXT_TO_TYPE.has(path.extname(f))) continue;
+        const abs = path.join(src.path, f);
+        if (isBunShebang(abs)) bunFiles.add(abs);
+      }
+    }
+    for (const src of fileSources) {
+      if (!EXT_TO_TYPE.has(path.extname(src.path))) continue;
+      if (isBunShebang(src.path)) bunFiles.add(src.path);
+    }
+
+    if (bunFiles.size) {
+      categories.push(
+        this.item({
+          kind: "fileCategory",
+          label: "Bun Scripts",
+          iconFile: "bun.svg",
+          categoryKind: "bun",
+        })
+      );
+    }
+
     for (const type of FILE_SCRIPT_TYPES) {
       if (!type.extensions.length) continue; // makefile handled separately
 
       let hasAny = false;
 
-      // Check directories
+      // Check directories (excluding bun-shebang files)
       for (const src of dirSources) {
         if (!fs.existsSync(src.path)) continue;
-        if (fs.readdirSync(src.path).some((f) => type.extensions.includes(path.extname(f)))) {
+        if (fs.readdirSync(src.path).some((f) => {
+          if (!type.extensions.includes(path.extname(f))) return false;
+          return !bunFiles.has(path.join(src.path, f));
+        })) {
           hasAny = true;
           break;
         }
       }
 
-      // Check individual file sources
+      // Check individual file sources (excluding bun-shebang files)
       if (!hasAny) {
-        hasAny = fileSources.some((s) => type.extensions.includes(path.extname(s.path)));
+        hasAny = fileSources.some((s) =>
+          type.extensions.includes(path.extname(s.path)) && !bunFiles.has(s.path)
+        );
       }
 
       if (hasAny) {
@@ -585,6 +749,8 @@ class ScriptProvider implements vscode.TreeDataProvider<ScriptItem> {
   }
 
   private fileCategoryChildren(cat: Script): ScriptItem[] {
+    if (cat.categoryKind === "bun") return this.bunCategoryChildren();
+
     const type = FILE_SCRIPT_TYPES.find((t) => t.kind === cat.categoryKind);
     if (!type) return [];
 
@@ -592,7 +758,7 @@ class ScriptProvider implements vscode.TreeDataProvider<ScriptItem> {
     const items: ScriptItem[] = [];
     const seen = new Set<string>();
 
-    // From directory sources
+    // From directory sources (excluding bun-shebang files)
     for (const src of all.filter((s) => s.type === "directory")) {
       if (!fs.existsSync(src.path)) continue;
       const files = fs.readdirSync(src.path)
@@ -602,15 +768,17 @@ class ScriptProvider implements vscode.TreeDataProvider<ScriptItem> {
       for (const file of files) {
         const absPath = path.join(src.path, file);
         if (seen.has(absPath)) continue;
+        if (isBunShebang(absPath)) continue;
         seen.add(absPath);
         items.push(this.fileScriptItem(absPath, src.path, type, file));
       }
     }
 
-    // From individual file sources
+    // From individual file sources (excluding bun-shebang files)
     for (const src of all.filter((s) => s.type === "file")) {
       if (seen.has(src.path)) continue;
       if (!type.extensions.includes(path.extname(src.path))) continue;
+      if (isBunShebang(src.path)) continue;
       seen.add(src.path);
       items.push(this.fileScriptItem(src.path, path.dirname(src.path), type, path.basename(src.path)));
     }
@@ -618,16 +786,76 @@ class ScriptProvider implements vscode.TreeDataProvider<ScriptItem> {
     return items;
   }
 
-  private fileScriptItem(absPath: string, cwd: string, type: FileScriptType, filename: string): ScriptItem {
+  private bunCategoryChildren(): ScriptItem[] {
+    const all = this.sources.getAll();
+    const items: ScriptItem[] = [];
+    const seen = new Set<string>();
+
+    for (const src of all.filter((s) => s.type === "directory")) {
+      if (!fs.existsSync(src.path)) continue;
+      const files = fs.readdirSync(src.path)
+        .filter((f) => EXT_TO_TYPE.has(path.extname(f)))
+        .sort();
+
+      for (const file of files) {
+        const absPath = path.join(src.path, file);
+        if (seen.has(absPath)) continue;
+        if (!isBunShebang(absPath)) continue;
+        seen.add(absPath);
+        const type = EXT_TO_TYPE.get(path.extname(file))!;
+        items.push(this.fileScriptItem(absPath, src.path, type, file, "bun.svg"));
+      }
+    }
+
+    for (const src of all.filter((s) => s.type === "file")) {
+      if (seen.has(src.path)) continue;
+      if (!EXT_TO_TYPE.has(path.extname(src.path))) continue;
+      if (!isBunShebang(src.path)) continue;
+      seen.add(src.path);
+      const type = EXT_TO_TYPE.get(path.extname(src.path))!;
+      items.push(this.fileScriptItem(src.path, path.dirname(src.path), type, path.basename(src.path), "bun.svg"));
+    }
+
+    return items;
+  }
+
+  private fileScriptItem(absPath: string, cwd: string, type: FileScriptType, filename: string, iconOverride?: string): ScriptItem {
+    absPath = resolveToWorkspace(absPath);
+    cwd = resolveToWorkspace(cwd);
+
+    // If the cwd is a symlinked directory, the OS resolves the symlink on
+    // chdir(), so process.cwd() returns the real path and parent-directory
+    // traversal (e.g. pnpm looking for package.json) breaks.  Work around
+    // this by running from the workspace root with a relative path instead.
+    let effectiveFilename = filename;
+    let effectiveCwd = cwd;
+    const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (wsRoot) {
+      try {
+        const stat = fs.lstatSync(cwd);
+        if (stat.isSymbolicLink()) {
+          const relDir = path.relative(wsRoot, cwd);
+          if (!relDir.startsWith("..")) {
+            effectiveFilename = path.join(relDir, filename);
+            effectiveCwd = wsRoot;
+          }
+        }
+      } catch { /* ignore */ }
+    }
+
+    const shebangCmd = readShebang(absPath);
+    const defaultCommand = shebangCmd
+      ? `${shebangCmd} "${effectiveFilename}"`
+      : type.makeCommand(effectiveFilename);
     return this.item({
       kind: "fileScript",
       label: displayPath(absPath),
       id: `file:${absPath}`,
-      defaultCommand: type.makeCommand(filename),
-      cwd,
+      defaultCommand,
+      cwd: effectiveCwd,
       filePath: absPath,
       sourcePath: absPath,
-      iconFile: type.fileIconFile,
+      iconFile: iconOverride ?? type.fileIconFile,
     });
   }
 
@@ -671,7 +899,10 @@ class WatcherManager implements vscode.Disposable {
 
       if (src.type === "packageJson") {
         // Watch the specific package.json file for edits
-        const dir = vscode.Uri.file(path.dirname(src.path));
+        // Resolve symlinks so the watcher monitors the real target
+        let watchDir: string;
+        try { watchDir = fs.realpathSync(path.dirname(src.path)); } catch { watchDir = path.dirname(src.path); }
+        const dir = vscode.Uri.file(watchDir);
         const watcher = vscode.workspace.createFileSystemWatcher(
           new vscode.RelativePattern(dir, path.basename(src.path))
         );
@@ -682,7 +913,10 @@ class WatcherManager implements vscode.Disposable {
       } else if (src.type === "directory") {
         // Watch for any file added/removed/changed directly inside the directory
         // (covers new script files and Makefile edits)
-        const dir = vscode.Uri.file(src.path);
+        // Resolve symlinks so the watcher monitors the real target
+        let watchPath: string;
+        try { watchPath = fs.realpathSync(src.path); } catch { watchPath = src.path; }
+        const dir = vscode.Uri.file(watchPath);
         const watcher = vscode.workspace.createFileSystemWatcher(
           new vscode.RelativePattern(dir, "*")
         );
@@ -732,9 +966,9 @@ export function activate(context: vscode.ExtensionContext) {
   const sources = new SourceStore(context.workspaceState);
   const overrides = new ScriptStore(context.workspaceState, "runway.overrides");
   const labels = new ScriptStore(context.workspaceState, "runway.labels");
-  // Seeded with any terminals already open when the extension activates
-  const runningTerminals = new Set<string>(vscode.window.terminals.map((t) => t.name));
-  const provider = new ScriptProvider(context.extensionUri, sources, overrides, labels, runningTerminals);
+  const favorites = new ScriptStore(context.workspaceState, "runway.favorites");
+  const runningTerminals = new Set<string>();
+  const provider = new ScriptProvider(context.extensionUri, sources, overrides, labels, favorites, runningTerminals);
   const decorationProvider = new RunningDecorationProvider();
 
   const treeView = vscode.window.createTreeView("runwayView", {
@@ -769,7 +1003,12 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Track terminal lifecycle to update running indicators and decorations
   context.subscriptions.push(
-    vscode.window.onDidOpenTerminal((t) => markRunning(t.name)),
+    vscode.window.onDidOpenTerminal((t) => {
+      // Only mark Runway-managed terminals as running
+      if (pendingCommands.has(t.name) || trackedExecutions.has(t.name)) {
+        markRunning(t.name);
+      }
+    }),
     vscode.window.onDidCloseTerminal((t) => {
       pendingCommands.delete(t.name);
       trackedExecutions.delete(t.name);
@@ -782,8 +1021,13 @@ export function activate(context: vscode.ExtensionContext) {
       const command = pendingCommands.get(terminal.name);
       if (command) {
         pendingCommands.delete(terminal.name);
-        const execution = shellIntegration.executeCommand(command);
-        trackedExecutions.set(terminal.name, execution);
+        // Small delay to let the shell prompt fully initialize — without this,
+        // executeCommand can silently fail if the prompt isn't ready yet.
+        setTimeout(() => {
+          const execution = shellIntegration.executeCommand(command);
+          trackedExecutions.set(terminal.name, execution);
+          markRunning(terminal.name);
+        }, 200);
       }
     }),
 
@@ -952,6 +1196,48 @@ export function activate(context: vscode.ExtensionContext) {
         if (!item.script.id) return;
         await labels.clear(item.script.id);
         provider.refresh();
+      }
+    ),
+
+    vscode.commands.registerCommand(
+      "runway.favorite",
+      async (item: ScriptItem) => {
+        if (!item.script.id) return;
+        await favorites.set(item.script.id, "1");
+        provider.refresh();
+      }
+    ),
+
+    vscode.commands.registerCommand(
+      "runway.unfavorite",
+      async (item: ScriptItem) => {
+        if (!item.script.id) return;
+        await favorites.clear(item.script.id);
+        provider.refresh();
+      }
+    ),
+
+    vscode.commands.registerCommand(
+      "runway.copyPath",
+      (item: ScriptItem) => {
+        const p = item.script.filePath ?? item.script.cwd;
+        if (p) vscode.env.clipboard.writeText(p);
+      }
+    ),
+
+    vscode.commands.registerCommand(
+      "runway.copyRelativePath",
+      (item: ScriptItem) => {
+        const p = item.script.filePath ?? item.script.cwd;
+        if (p) vscode.env.clipboard.writeText(displayPath(p));
+      }
+    ),
+
+    vscode.commands.registerCommand(
+      "runway.revealInFinder",
+      (item: ScriptItem) => {
+        const p = item.script.filePath ?? item.script.cwd;
+        if (p) vscode.commands.executeCommand("revealFileInOS", vscode.Uri.file(p));
       }
     ),
 
@@ -1157,7 +1443,7 @@ async function addPackageJson(
       vscode.window.showWarningMessage(`Skipped ${path.basename(absPath)} — only package.json files are supported here.`);
       continue;
     }
-    if (await sources.add({ type: "packageJson", path: absPath })) added++;
+    if (await sources.add({ type: "packageJson", path: resolveToWorkspace(absPath) })) added++;
   }
 
   if (added > 0) {
@@ -1186,7 +1472,7 @@ async function addDirectory(
 
   let added = 0;
   for (const uri of picked) {
-    if (await sources.add({ type: "directory", path: uri.fsPath })) added++;
+    if (await sources.add({ type: "directory", path: resolveToWorkspace(uri.fsPath) })) added++;
   }
 
   if (added > 0) {
@@ -1222,7 +1508,7 @@ async function addFile(
       vscode.window.showWarningMessage(`Unsupported file type: ${ext}`);
       continue;
     }
-    if (await sources.add({ type: "file", path: uri.fsPath })) added++;
+    if (await sources.add({ type: "file", path: resolveToWorkspace(uri.fsPath) })) added++;
   }
 
   if (added > 0) {
